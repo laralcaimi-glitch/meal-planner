@@ -2,3 +2,4 @@ streamlit>=1.56.0
 anthropic>=0.96.0
 requests>=2.33.1
 beautifulsoup4>=4.14.0
+streamlit-local-storage>=0.0.2

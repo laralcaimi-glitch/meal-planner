@@ -35,6 +35,22 @@ client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
 
 st.set_page_config(page_title="Weekly Meal Planner", page_icon="🥗", layout="wide")
 
+# ── Browser localStorage (survives server restarts on Streamlit Cloud) ────────
+
+try:
+    from streamlit_local_storage import LocalStorage
+    _ls = LocalStorage()
+except Exception:
+    _ls = None
+
+_LS_KEYS = {
+    RECIPES_FILE:  "recipes",
+    PLAN_FILE:     "meal_plan",
+    LIST_FILE:     "shopping_list",
+    HISTORY_FILE:  "meal_history",
+    COOKED_FILE:   "cooked_history",
+}
+
 # ── Persistence ───────────────────────────────────────────────────────────────
 
 def load_json(path, default):
@@ -44,8 +60,16 @@ def load_json(path, default):
     return default
 
 def save_json(path, data):
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
+    try:
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        pass
+    if _ls and path in _LS_KEYS:
+        try:
+            _ls.setItem(_LS_KEYS[path], json.dumps(data, default=str))
+        except Exception:
+            pass
 
 # ── Session state ─────────────────────────────────────────────────────────────
 
@@ -60,6 +84,30 @@ ss("meal_history",   load_json(HISTORY_FILE, []))
 ss("cooked_history", load_json(COOKED_FILE, []))
 ss("include_sil",    False)
 ss("list_view",      "By Aisle")
+
+# Restore from browser localStorage if local files are missing (Streamlit Cloud)
+if _ls and not st.session_state.get("_ls_loaded"):
+    _needs_restore = {
+        "recipes":       not st.session_state.recipes,
+        "meal_plan":     not st.session_state.meal_plan,
+        "shopping_list": not st.session_state.shopping_list,
+        "meal_history":  not st.session_state.meal_history,
+        "cooked_history":not st.session_state.cooked_history,
+    }
+    _restored = False
+    for ls_key, needs in _needs_restore.items():
+        if needs:
+            try:
+                val = _ls.getItem(ls_key)
+                if val:
+                    parsed = json.loads(val) if isinstance(val, str) else val
+                    if parsed:
+                        st.session_state[ls_key] = parsed
+                        _restored = True
+            except Exception:
+                pass
+    if _restored:
+        st.session_state["_ls_loaded"] = True
 
 # ── Family & preference strings ───────────────────────────────────────────────
 
