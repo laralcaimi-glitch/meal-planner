@@ -548,6 +548,9 @@ Raw ingredients:
         line = line.strip()
         if not line or line.startswith("#") or "|" not in line:
             continue
+        # Strip leading/trailing pipes Claude sometimes adds
+        if line.startswith("|"): line = line[1:].strip()
+        if line.endswith("|"):   line = line[:-1].strip()
         parts = [p.strip() for p in line.split("|")]
         if len(parts) >= 3:
             items.append({"section": parts[0], "quantity": parts[1],
