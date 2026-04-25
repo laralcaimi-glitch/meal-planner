@@ -844,6 +844,16 @@ with tab_plan:
 with tab_list:
     st.header("Shopping List")
 
+    if st.session_state.meal_plan.get("nights") and st.button("🔄 Rebuild Shopping List", help="Re-generate the list from your current meal plan"):
+        with st.spinner("Rebuilding…"):
+            try:
+                shopping = build_shopping_list(st.session_state.meal_plan)
+                st.session_state.shopping_list = shopping
+                save_json(LIST_FILE, shopping)
+                st.rerun()
+            except Exception as e:
+                st.error(f"Could not rebuild: {e}")
+
     if not st.session_state.shopping_list:
         st.info("Generate a meal plan first — your shopping list will appear here automatically.")
     else:
