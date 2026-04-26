@@ -298,15 +298,23 @@ def parse_recipe_text(text: str, day: str) -> dict:
 
 
 def claude_generate_night(day: str, include_sil: bool, avoid_proteins: list,
-                           extra_notes: str, direction: str = "") -> dict:
+                           extra_notes: str, direction: str = "",
+                           week_meals: list = None) -> dict:
     family = FAMILY_BASE + (", plus 1 vegan adult (sister-in-law)" if include_sil else "")
     avoid  = f"Avoid these proteins (already on the plan): {', '.join(avoid_proteins)}." if avoid_proteins else ""
+    week_ctx = ""
+    if week_meals:
+        week_ctx = "Other meals already on the plan this week — do NOT repeat proteins, cuisines, key ingredients, or flavor profiles:\n"
+        week_ctx += "\n".join(f"  - {m}" for m in week_meals)
     prompt = f"""Write a complete dinner recipe for {day} for {family}.
 
 {PREFS_SHORT}
 {avoid}
+{week_ctx}
 {f"This week: {extra_notes}" if extra_notes else ""}
 {f"Specifically make: {direction}" if direction.strip() else ""}
+
+IMPORTANT: Every ingredient line MUST include an exact quantity (e.g. "2 lbs", "3 cloves", "1/4 cup"). Never list an ingredient without an amount.
 
 Use EXACTLY this plain-text format with no JSON or markdown:
 
@@ -395,7 +403,7 @@ Days in order: {', '.join(days)}"""
 # ── Single night: Spoonacular first, Claude fallback ─────────────────────────
 
 def generate_night(item: dict, include_sil: bool, avoid: list, extra_notes: str,
-                   saved_recipes: list = None) -> dict:
+                   saved_recipes: list = None, week_meals: list = None) -> dict:
     day        = item["day"]
     meal_name  = item.get("meal_name", "")
     protein    = item.get("protein", "")
@@ -426,7 +434,8 @@ def generate_night(item: dict, include_sil: bool, avoid: list, extra_notes: str,
         return night
 
     # Claude fallback
-    night = claude_generate_night(day, include_sil, avoid, extra_notes, meal_name)
+    night = claude_generate_night(day, include_sil, avoid, extra_notes, meal_name,
+                                  week_meals=week_meals)
     night["protein"]        = night.get("protein") or protein
     night["cooking_method"] = night.get("cooking_method") or method
     return night
@@ -832,9 +841,11 @@ with tab_plan:
                     if st.button("Find new meal", key=f"rep_{i}"):
                         with st.spinner(f"Finding a new {night['day']} dinner…"):
                             try:
-                                avoid  = [n.get("protein","") for n in st.session_state.meal_plan["nights"] if n.get("day") != night["day"]]
+                                other_nights = [n for n in st.session_state.meal_plan["nights"] if n.get("day") != night["day"]]
+                                avoid        = [n.get("protein","") for n in other_nights if n.get("protein")]
+                                week_meals   = [f"{n['day']}: {n.get('meal_name','')} ({n.get('protein','')})" for n in other_nights if n.get("meal_name")]
                                 outline_item = {"day": night["day"], "meal_name": direction or "", "protein":"", "cooking_method":""}
-                                new = generate_night(outline_item, include_sil, avoid, direction)
+                                new = generate_night(outline_item, include_sil, avoid, direction, week_meals=week_meals)
                                 st.session_state.meal_plan["nights"][i] = new
                                 save_json(PLAN_FILE, st.session_state.meal_plan)
                                 st.session_state.shopping_list = build_shopping_list(st.session_state.meal_plan)
