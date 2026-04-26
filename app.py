@@ -2,6 +2,7 @@ import streamlit as st
 import anthropic
 import json
 import os
+import re
 import base64
 import requests
 import random
@@ -270,7 +271,9 @@ def parse_recipe_text(text: str, day: str) -> dict:
                     if any(line.strip().rstrip(":").upper() == h
                            for h in ("INGREDIENTS","INSTRUCTIONS")):
                         break
-                stripped = line.lstrip("-•0123456789. ").strip()
+                stripped = line.strip()
+                stripped = re.sub(r'^[-•*]\s*', '', stripped)        # remove bullet only
+                stripped = re.sub(r'^\d+[.)]\s+', '', stripped)      # remove "1. " but not "2 cups"
                 if stripped:
                     lines.append(stripped)
         return lines
