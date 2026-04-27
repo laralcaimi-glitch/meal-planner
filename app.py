@@ -165,66 +165,85 @@ def categorize(ingredient: str) -> str:
 
 # ── Spoonacular ───────────────────────────────────────────────────────────────
 
-def search_spoonacular(query: str, cuisine: str = "", max_time: int = 60) -> dict | None:
-    if not SPOONACULAR_KEY:
+def _spoon_parse(recipe: dict) -> dict | None:
+    """Parse a Spoonacular recipe object into our night dict."""
+    instructions = []
+    for group in recipe.get("analyzedInstructions", []):
+        for step in group.get("steps", []):
+            instructions.append(step.get("step", "").strip())
+    instructions = [s for s in instructions if s]
+    if not instructions:
         return None
+
+    ingredients = [i.get("original", "") for i in recipe.get("extendedIngredients", []) if i.get("original")]
+    score      = recipe.get("spoonacularScore", 0)
+    likes      = recipe.get("aggregateLikes", 0)
+    source     = recipe.get("creditsText") or recipe.get("sourceName") or "Spoonacular"
+    source_url = recipe.get("sourceUrl", "")
+    stars      = "★" * min(5, round(score / 20)) if score else ""
+    note       = f"{stars} {score:.0f}/100 · {likes:,} saves — from {source}"
+    summary    = recipe.get("summary","").replace("<b>","").replace("</b>","")
+    summary    = re.sub(r'<[^>]+>', '', summary)[:150] + "…" if summary else ""
+
+    return {
+        "meal_name":      recipe.get("title", ""),
+        "description":    summary,
+        "protein":        "",
+        "sides":          [],
+        "prep_time":      f"{recipe.get('preparationMinutes') or ''} min".strip(),
+        "cook_time":      f"{recipe.get('cookingMinutes') or recipe.get('readyInMinutes','?')} min",
+        "servings":       f"serves {recipe.get('servings','?')} — scale for your family",
+        "cooking_method": "",
+        "source_site":    source,
+        "source_note":    note,
+        "search_url":     source_url,
+        "vegan_note":     "",
+        "ingredients":    ingredients,
+        "instructions":   instructions,
+        "is_real_recipe": True,
+    }
+
+
+def _spoon_search(query: str, cuisine: str = "") -> dict | None:
     params = {
-        "query":                 query,
-        "maxReadyTime":          max_time,
-        "number":                5,
-        "addRecipeInformation":  True,
-        "instructionsRequired":  True,
-        "fillIngredients":       True,
-        "sort":                  "popularity",
-        "offset":                random.randint(0, 30),
-        "apiKey":                SPOONACULAR_KEY,
+        "query": query, "maxReadyTime": 60, "number": 8,
+        "addRecipeInformation": True, "instructionsRequired": True,
+        "fillIngredients": True, "sort": "popularity",
+        "offset": random.randint(0, 20), "apiKey": SPOONACULAR_KEY,
     }
     if cuisine:
         params["cuisine"] = cuisine
-
     try:
-        resp = requests.get(
-            "https://api.spoonacular.com/recipes/complexSearch",
-            params=params, timeout=10
-        )
-        data = resp.json()
-        results = [r for r in data.get("results", []) if r.get("analyzedInstructions")]
-        if not results:
-            return None
-        recipe = results[0]
-
-        ingredients = [i.get("original", "") for i in recipe.get("extendedIngredients", [])]
-        instructions = []
-        for group in recipe.get("analyzedInstructions", []):
-            for step in group.get("steps", []):
-                instructions.append(step.get("step", "").strip())
-        instructions = [s for s in instructions if s]
-
-        score      = recipe.get("spoonacularScore", 0)
-        likes      = recipe.get("aggregateLikes", 0)
-        source     = recipe.get("creditsText") or recipe.get("sourceName") or "Spoonacular"
-        source_url = recipe.get("sourceUrl", "")
-        stars      = "★" * min(5, round(score / 20)) if score else ""
-        note       = f"{stars} {score:.0f}/100 Spoonacular score · {likes:,} saves — {source}"
-
-        return {
-            "meal_name":      recipe.get("title", ""),
-            "description":    recipe.get("summary", "").replace("<b>","").replace("</b>","")[:120] + "…" if recipe.get("summary") else "",
-            "protein":        "",
-            "sides":          [],
-            "prep_time":      f"{recipe.get('preparationMinutes') or ''} min".strip(),
-            "cook_time":      f"{recipe.get('cookingMinutes') or recipe.get('readyInMinutes','?')} min",
-            "servings":       f"serves {recipe.get('servings','?')} — scale for your family",
-            "cooking_method": "",
-            "source_site":    source,
-            "source_note":    note,
-            "search_url":     source_url,
-            "vegan_note":     "",
-            "ingredients":    ingredients,
-            "instructions":   instructions,
-        }
+        data = requests.get("https://api.spoonacular.com/recipes/complexSearch",
+                            params=params, timeout=10).json()
+        for r in data.get("results", []):
+            parsed = _spoon_parse(r)
+            if parsed:
+                return parsed
     except Exception:
+        pass
+    return None
+
+
+def search_spoonacular(protein: str, cuisine: str = "", meal_name: str = "") -> dict | None:
+    if not SPOONACULAR_KEY:
         return None
+    # Try 1: protein + cuisine (broad — most likely to find real results)
+    if protein and cuisine:
+        result = _spoon_search(protein, cuisine)
+        if result:
+            return result
+    # Try 2: meal name + cuisine
+    if meal_name:
+        result = _spoon_search(meal_name, cuisine)
+        if result:
+            return result
+    # Try 3: just protein, no cuisine filter
+    if protein:
+        result = _spoon_search(protein)
+        if result:
+            return result
+    return None
 
 # ── Claude recipe fallback ────────────────────────────────────────────────────
 
@@ -334,27 +353,45 @@ Use EXACTLY this plain-text format with no JSON or markdown:
                 raise
     raise RuntimeError("Could not generate recipe")
 
+# Cuisine pool — rotated to prevent repetition week to week
+CUISINE_POOL = [
+    "Italian","Mexican","Japanese","Indian","Thai","Korean","Greek",
+    "American","Chinese","Vietnamese","French","Moroccan","Spanish","Lebanese",
+]
+
 # ── Meal plan outline ─────────────────────────────────────────────────────────
 
 def plan_outline(nights: int, include_sil: bool, extra_notes: str) -> list:
     days   = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"][:nights]
     family = FAMILY_BASE + (", plus 1 vegan adult" if include_sil else "")
-    history = ""
-    # Generated plan history
-    gen_lines = []
-    for w in st.session_state.meal_history[-4:]:
-        meals = ", ".join(n["meal_name"] for n in w.get("nights", []))
-        gen_lines.append(f"  Week of {w['week_of']}: {meals}")
-    # Actually cooked history (more reliable for variety)
-    cooked_lines = []
+
+    # Build history context
+    gen_lines, cooked_lines = [], []
+    recent_cuisines = set()
+    for w in st.session_state.meal_history[-3:]:
+        for n in w.get("nights", []):
+            if n.get("meal_name"):
+                gen_lines.append(f"  {n['meal_name']}")
+            if n.get("cuisine"):
+                recent_cuisines.add(n["cuisine"].lower())
     for c in st.session_state.cooked_history[-20:]:
-        cooked_lines.append(f"  {c['date']}: {c['meal_name']}")
+        if c.get("meal_name"):
+            cooked_lines.append(f"  {c['date']}: {c['meal_name']}")
+
+    history = ""
     if gen_lines or cooked_lines:
-        history = "MEALS ALREADY MADE — do not repeat these:\n"
+        history = "ALREADY MADE — do not repeat these meals, proteins, or flavor profiles:\n"
         if cooked_lines:
             history += "Actually cooked:\n" + "\n".join(cooked_lines) + "\n"
         if gen_lines:
             history += "Recently planned:\n" + "\n".join(gen_lines)
+
+    # Pick distinct cuisines not used recently
+    available = [c for c in CUISINE_POOL if c.lower() not in recent_cuisines]
+    if len(available) < nights:
+        available = CUISINE_POOL[:]
+    chosen_cuisines = random.sample(available, min(nights, len(available)))
+    cuisine_assignments = "\n".join(f"  {days[i]}: {chosen_cuisines[i]}" for i in range(nights))
 
     saved = ""
     if st.session_state.recipes:
@@ -367,37 +404,41 @@ def plan_outline(nights: int, include_sil: bool, extra_notes: str) -> list:
 {history}
 {saved}
 
-Rules: no repeated proteins; red meat at most every other week; vary cooking methods.
+CUISINE ASSIGNMENTS — you MUST use exactly these cuisines, one per night:
+{cuisine_assignments}
 
-One line per night using | as delimiter:
-DAY | Meal Name | protein | cooking method
+Rules: no repeated proteins; no repeated key ingredients (e.g. chickpeas, za'atar) across nights; vary cooking methods.
+
+One line per night:
+DAY | Meal Name | protein | cuisine | cooking method
 
 Days in order: {', '.join(days)}"""
 
     resp = client.messages.create(
-        model="claude-sonnet-4-6", max_tokens=800,
+        model="claude-sonnet-4-6", max_tokens=900,
         messages=[{"role": "user", "content": prompt}],
     )
     outline = []
     for line in resp.content[0].text.splitlines():
-        line = line.strip().lstrip("0123456789.-) ")  # strip any numbering Claude adds
+        line = line.strip().lstrip("0123456789.-) ")
         if "|" not in line:
             continue
         parts = [p.strip() for p in line.split("|")]
         day = parts[0] if parts else ""
-        # Only accept lines where first part looks like a day name
         if not any(d in day for d in ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]):
             continue
         outline.append({
             "day":            day,
             "meal_name":      parts[1] if len(parts) > 1 else "",
             "protein":        parts[2] if len(parts) > 2 else "",
-            "cooking_method": parts[3] if len(parts) > 3 else "",
+            "cuisine":        parts[3] if len(parts) > 3 else "",
+            "cooking_method": parts[4] if len(parts) > 4 else "",
         })
-    # Fallback: if parsing failed, build a bare outline so generation still runs
     if not outline:
-        for d in days:
-            outline.append({"day": d, "meal_name": "", "protein": "", "cooking_method": ""})
+        for j, d in enumerate(days):
+            outline.append({"day": d, "meal_name": "", "protein": "",
+                            "cuisine": chosen_cuisines[j] if j < len(chosen_cuisines) else "",
+                            "cooking_method": ""})
     return outline[:nights]
 
 # ── Single night: Spoonacular first, Claude fallback ─────────────────────────
@@ -417,25 +458,21 @@ def generate_night(item: dict, include_sil: bool, avoid: list, extra_notes: str,
             night["cooking_method"] = method
             return night
 
-    # Try Spoonacular
-    cuisine = ""
-    if extra_notes:
-        low = extra_notes.lower()
-        if "mexican" in low:   cuisine = "mexican"
-        elif "asian" in low:   cuisine = "asian"
-        elif "italian" in low: cuisine = "italian"
-        elif "middle east" in low or "mediterranean" in low: cuisine = "mediterranean"
-
-    night = search_spoonacular(meal_name, cuisine=cuisine)
+    # Try Spoonacular — search by protein + cuisine (broad) for best hit rate
+    cuisine = item.get("cuisine", "")
+    night = search_spoonacular(protein=protein, cuisine=cuisine, meal_name=meal_name)
     if night:
         night["day"]            = day
         night["protein"]        = night.get("protein") or protein
         night["cooking_method"] = night.get("cooking_method") or method
+        night["cuisine"]        = cuisine
         return night
 
-    # Claude fallback
+    # Claude fallback — mark as AI generated
     night = claude_generate_night(day, include_sil, avoid, extra_notes, meal_name,
                                   week_meals=week_meals)
+    night["is_real_recipe"] = False
+    night["cuisine"]        = cuisine
     night["protein"]        = night.get("protein") or protein
     night["cooking_method"] = night.get("cooking_method") or method
     return night
@@ -484,7 +521,8 @@ def generate_meal_plan(nights: int, include_sil: bool, extra_notes: str) -> dict
 
     st.session_state.meal_history.append({
         "week_of": date.today().strftime("%b %d, %Y"),
-        "nights":  [{"meal_name": n.get("meal_name",""), "protein": n.get("protein","")}
+        "nights":  [{"meal_name": n.get("meal_name",""), "protein": n.get("protein",""),
+                     "cuisine": n.get("cuisine","")}
                     for n in nights_clean],
     })
     st.session_state.meal_history = st.session_state.meal_history[-8:]
@@ -749,15 +787,21 @@ with tab_plan:
                 if night.get("description"):
                     st.write(f"*{night['description']}*")
 
-                # Source badge
+                # Source badge — real recipe vs AI generated
                 site  = night.get("source_site","")
                 note  = night.get("source_note","")
                 url   = night.get("search_url","")
-                if site or note:
-                    badge = f"**{site}** — {note}" if site else note
-                    if url:
-                        badge += f"  [→ View original recipe]({url})"
-                    st.info(badge)
+                is_real = night.get("is_real_recipe", bool(url and "google.com" not in url))
+                if is_real and url:
+                    src_cols = st.columns([3, 1])
+                    with src_cols[0]:
+                        st.success(f"✅ **Real recipe** from {site} — {note}")
+                    with src_cols[1]:
+                        st.link_button("⭐ View & Reviews", url, use_container_width=True)
+                elif url:
+                    st.info(f"**{site}** — {note}  [→ View recipe]({url})")
+                else:
+                    st.warning("🤖 AI-generated recipe — not from a specific source")
 
                 st.divider()
                 col_l, col_r = st.columns(2)
